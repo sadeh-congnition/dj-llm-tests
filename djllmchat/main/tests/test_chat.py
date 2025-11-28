@@ -1,5 +1,10 @@
-from django_llm_chat.chat import Chat
-from django_llm_chat.models import Chat as ChatDBModel, Message, LLMCall
+import pytest
+from django_llm_chat.chat import Chat, DuplicateSystemMessageError
+from django_llm_chat.models import (
+    Chat as ChatDBModel,
+    Message,
+    LLMCall,
+)
 
 
 def test_create_chat(db):
@@ -21,15 +26,20 @@ def test_create_user_query(user, chat):
 
 
 def test_send_to_llm(model_name, article_text, readingpal_user, user, chat, user_query):
-    user_msg = chat.create_user_message(text=article_text, user=readingpal_user)
-    ai_msg = chat.send_user_msg_to_llm(
+    system_msg = chat.create_system_message("You are an artist!", user)
+    first_user_msg = chat.create_user_message(text=article_text, user=readingpal_user)
+    ai_msg, second_user_msg, _ = chat.send_user_msg_to_llm(
         model_name=model_name, text=user_query, user=user
     )
 
-    assert Message.objects.count() == 3, "1 readingpal, 1 user, 1 AI"
+    assert Message.objects.count() == 4, "1 system, 2 user, 1 LLM"
     assert Message.objects.filter(type=Message.Type.ASSISTANT).count() == 1
     assert Message.objects.filter(type=Message.Type.USER).count() == 2
-    assert user_msg.chat == chat.chat_db_model
+    assert Message.objects.filter(type=Message.Type.SYSTEM).count() == 1
+
+    assert first_user_msg.chat == chat.chat_db_model
+    assert system_msg.chat == chat.chat_db_model
+    assert second_user_msg.chat == chat.chat_db_model
     assert ai_msg.chat == chat.chat_db_model
 
     for msg in Message.objects.all():
@@ -44,6 +54,9 @@ def test_send_to_llm(model_name, article_text, readingpal_user, user, chat, user
 
     llm_call_db_model = LLMCall.objects.first()
 
+    assert len(llm_call_db_model.messages.all()) == 4, (
+        "Two user messages plus one LLM message plus one system message"
+    )
     assert llm_call_db_model.input_tokens_count > 1
     assert llm_call_db_model.output_tokens_count > 1
     assert llm_call_db_model.response_data
@@ -51,3 +64,9 @@ def test_send_to_llm(model_name, article_text, readingpal_user, user, chat, user
     assert "id" in llm_call_db_model.response_data
     assert "model" in llm_call_db_model.response_data
     assert "usage" in llm_call_db_model.response_data
+
+
+def test_adding_system_message_more_than_once(chat, user):
+    chat.create_system_message("You are an artist!", user)
+    with pytest.raises(DuplicateSystemMessageError):
+        chat.create_system_message("You are a doctor!", user)
